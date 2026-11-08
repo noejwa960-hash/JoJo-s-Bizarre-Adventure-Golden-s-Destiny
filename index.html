@@ -5843,7 +5843,7 @@ function authFinish(id, offline, prof) {
     if (prof && typeof prof.avatar === 'number') { localStorage.setItem('sbtcg_avatar', String(prof.avatar)); localStorage.setItem('sbtcg_avatar_v', '2'); }
   } catch (e) {}
   const g = document.getElementById('auth-gate'); if (g) g.remove();
-  try { mailSync(); } catch (e) {}
+  try { profileLoadOnLogin(id).then(() => { try { mailSync(); } catch (e) {} try { render(); } catch (e) {} }); } catch (e) { try { mailSync(); } catch (e2) {} }
   try { startBanWatch(); } catch (e) {}
   try { if (!offline) loginNotify(id); startAlertWatch(); } catch (e) {}
   try { render(); } catch (e) {}
@@ -5916,6 +5916,7 @@ function showAuthGate() {
   setTimeout(() => { const i = document.getElementById('auth-id'); if (i) i.focus(); }, 100);
 }
 setTimeout(showAuthGate, 400);
+setTimeout(() => { try { const id = getAccountId(); if (id && firebaseReady) profileLoadOnLogin(id).then(() => { try { render(); } catch (e) {} }); } catch (e) {} }, 500);
 
 
 // ---------- 개발자 모드 (보안 비번 확인 후 카드/코인 지급) ----------
@@ -6085,9 +6086,70 @@ function logoutAsk() {
     <div style="display:flex;gap:6px;"><button class="small ghost" style="flex:1;" onclick="document.getElementById('logout-confirm').remove()">취소</button><button class="small accent" style="flex:1;" onclick="doLogout()">로그아웃</button></div></div>`;
   document.body.appendChild(o);
 }
+// ---------- 계정 데이터 서버 저장 (코인/카드/전적/도전과제/프로필 사진 등) ----------
+// accounts/<아이디>/data 에 저장해두고, 로그인할 때마다 불러와서 어느 기기에서든 이어서 쓸 수 있게 함
+const SYNC_KEYS = ['sbtcg_coins', 'sbtcg_owned', 'sbtcg_equipped', 'sbtcg_ach', 'sbtcg_stats', 'sbtcg_rankpts2', 'sbtcg_rep', 'sbtcg_rep_clean',
+  'sbtcg_rankban', 'sbtcg_rankban_n', 'sbtcg_rankban_perm', 'sbtcg_used_codes', 'sbtcg_unlocked_summons', 'sbtcg_history',
+  'sbtcg_avatar', 'sbtcg_avatar_v', 'sbtcg_friend_code', 'sbtcg_mail', 'sbtcg_mail_del'];
+function isSyncKey(k) { return typeof k === 'string' && (SYNC_KEYS.includes(k) || k.startsWith('sbtcg_skin_')); }
+const fbEnc = k => k.replace(/[%.#$\[\]\/]/g, c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+const fbDec = k => k.replace(/%([0-9a-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
+let profileApplying = false, profileTimer = null, profileReady = false;
+function profilePack() {
+  const o = {};
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (isSyncKey(k)) o[fbEnc(k)] = localStorage.getItem(k); } } catch (e) {}
+  return o;
+}
+function profileHasLocal() { try { for (let i = 0; i < localStorage.length; i++) if (isSyncKey(localStorage.key(i))) return true; } catch (e) {} return false; }
+function profileUploadNow() {
+  const id = getAccountId();
+  if (!id || isGuest() || !firebaseReady || !profileReady || profileApplying) return Promise.resolve(false);
+  try { localStorage.setItem('sbtcg_data_owner', id); } catch (e) {}
+  return firebase.database().ref('accounts/' + id + '/data').set(profilePack()).then(() => { try { localStorage.removeItem('sbtcg_data_dirty'); } catch (e) {} return true; }).catch(() => false);
+}
+function profileScheduleUpload() {
+  if (profileApplying) return;
+  try { localStorage.setItem('sbtcg_data_dirty', '1'); } catch (e) {} // 아직 서버에 못 올린 변경이 있다는 표시
+  clearTimeout(profileTimer); profileTimer = setTimeout(() => { profileUploadNow(); }, 1500);
+}
+(function hookStorage() { // 저장 대상 값이 바뀌면 자동으로 서버에 올림
+  try {
+    const sp = Storage.prototype, oSet = sp.setItem, oRem = sp.removeItem;
+    sp.setItem = function (k, v) { oSet.call(this, k, v); if (this === window.localStorage && isSyncKey(k)) profileScheduleUpload(); };
+    sp.removeItem = function (k) { oRem.call(this, k); if (this === window.localStorage && isSyncKey(k)) profileScheduleUpload(); };
+  } catch (e) {}
+})();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { clearTimeout(profileTimer); if (localStorage.getItem('sbtcg_data_dirty') === '1') profileUploadNow(); } catch (e) {} } });
+window.addEventListener('pagehide', () => { try { clearTimeout(profileTimer); if (localStorage.getItem('sbtcg_data_dirty') === '1') profileUploadNow(); } catch (e) {} });
+function profileLoadOnLogin(id) { // 로그인 직후 한 번: 서버 데이터를 불러와 이 기기에 적용
+  profileReady = false;
+  if (!firebaseReady) { profileReady = false; return Promise.resolve(); }
+  return firebase.database().ref('accounts/' + id + '/data').once('value').then(snap => {
+    const d = snap.val();
+    let owner = null, dirty = false; try { owner = localStorage.getItem('sbtcg_data_owner'); dirty = localStorage.getItem('sbtcg_data_dirty') === '1'; } catch (e) {}
+    if (d && dirty && owner === id) { profileReady = true; return profileUploadNow(); } // 이 기기에 아직 못 올린 최신 변경이 있으면 그걸 서버에 올림
+    profileApplying = true;
+    try {
+      if (d && typeof d === 'object') { // 서버 데이터가 있으면 그걸로 통째로 교체
+        const rm = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (isSyncKey(k)) rm.push(k); }
+        rm.forEach(k => localStorage.removeItem(k));
+        Object.keys(d).forEach(ek => { const k = fbDec(ek); if (isSyncKey(k) && typeof d[ek] === 'string') localStorage.setItem(k, d[ek]); });
+      } else if (profileHasLocal() && owner && owner !== id) { // 다른 계정이 쓰던 데이터 → 새 계정은 처음부터
+        const rm = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (isSyncKey(k)) rm.push(k); }
+        rm.forEach(k => localStorage.removeItem(k));
+      }
+      localStorage.setItem('sbtcg_data_owner', id);
+    } catch (e) {}
+    profileApplying = false; profileReady = true;
+    // 서버에 아직 없고 이 기기에 진행 상황이 있으면 첫 업로드 (기존 계정 이어받기)
+    if (!d && profileHasLocal()) profileUploadNow();
+  }).catch(() => { profileApplying = false; profileReady = false; });
+}
 function doLogout() {
   const c = document.getElementById('logout-confirm'); if (c) c.remove();
   stopBanWatch(); stopAlertWatch();
+  try { clearTimeout(profileTimer); profileUploadNow(); } catch (e) {}
+  profileReady = false;
   try { localStorage.removeItem('sbtcg_account'); } catch (e) {}
   mailOpenId = null;
   goToScreen('home');
