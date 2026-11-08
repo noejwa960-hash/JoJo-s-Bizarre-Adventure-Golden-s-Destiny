@@ -4622,6 +4622,9 @@ function unlockSummon(name) {
   if (!list.includes(name)) { list.push(name); localStorage.setItem('sbtcg_unlocked_summons', JSON.stringify(list)); }
 }
 
+// Act 시리즈는 도감에서 Act.1 하나로만 보이고, 눌러서 ◀ ▶ 로 다른 Act 를 넘겨봄
+const ACT_GROUPS = { '터스크 Act.1': ['터스크 Act.1', '터스크 Act.2', '터스크 Act.3', '터스크 Act.4'] };
+const ACT_HIDDEN = Object.values(ACT_GROUPS).flat().filter(n => !ACT_GROUPS[n]);
 function isCardLocked(name) {
   const isShopOrGacha = SHOP_ITEMS.some(it => it.name === name) || GACHA_POOL.includes(name) || CODE_CARDS.includes(name);
   if (isShopOrGacha) return !getOwnedShopItems().includes(name);
@@ -4677,9 +4680,9 @@ function cardGalleryHtml() {
     ...SPECIAL_TEMPLATES.filter(t => CODE_CARDS.includes(t.name)).map(t => makeSpecial(t)),
   ].filter(c => !isHiddenCodeCard(c.name));
   // 특수 소환 카드는 한 번 얻기 전에는 도감에 보이지 않음 (G.E.R. 만 ??? 실루엣으로 예고)
-  const summonUnlocked = n => n === 'G.E.R.' || getUnlockedSummons().includes(n);
+  const summonUnlocked = n => n === 'G.E.R.' || getUnlockedSummons().includes(n) || (ACT_GROUPS[n] && ACT_GROUPS[n].some(x => getUnlockedSummons().includes(x)));
   const specialSummonCards = [
-    ...STAND_TEMPLATES.filter(t => DECK_EXCLUDED_STANDS.includes(t.name) && summonUnlocked(t.name)).map(t => makeStand(t)),
+    ...STAND_TEMPLATES.filter(t => DECK_EXCLUDED_STANDS.includes(t.name) && !ACT_HIDDEN.includes(t.name) && summonUnlocked(t.name)).map(t => makeStand(t)),
     ...SPECIAL_TEMPLATES.filter(t => DECK_EXCLUDED_SPECIALS.includes(t.name) && summonUnlocked(t.name)).map(t => makeSpecial(t)),
   ];
 
@@ -4721,12 +4724,15 @@ function cardGalleryHtml() {
     ${body}
   `;
 }
-function openGalleryModal(name) {
+function openGalleryModal(name, actIdx) {
   const overlay = document.getElementById('card-modal');
   const content = document.getElementById('card-modal-content');
   const locked = isCardLocked(name);
   const useCustomLockedArt = locked && !!CARD_IMAGES_LOCKED[name];
-  const style = locked ? cardImgStyleLocked(name) : cardImgStyle(name);
+  const actGroup = ACT_GROUPS[name];
+  const actI = actGroup ? (((actIdx || 0) % actGroup.length) + actGroup.length) % actGroup.length : 0;
+  const shownName = (actGroup && !locked) ? actGroup[actI] : name;
+  const style = locked ? cardImgStyleLocked(name) : cardImgStyle(shownName);
   const isShopOrGacha = SHOP_ITEMS.some(it => it.name === name) || GACHA_POOL.includes(name) || CODE_CARDS.includes(name);
   let equipBtn = '';
   if (isShopOrGacha && !locked) {
@@ -4735,7 +4741,9 @@ function openGalleryModal(name) {
     equipBtn = `<button class="small ${isEquipped ? 'accent' : 'ghost'}" style="width:100%;margin-bottom:6px;" onclick="toggleEquippedCard('${name}'); openGalleryModal('${name}');">${isEquipped ? '✅ 장착됨 (탭하면 해제)' : `⚡ 장착하기 (${equipped.length}/3)`}</button>`;
   }
   content.innerHTML = `<div class="modal-img ${locked && !useCustomLockedArt ? 'locked' : ''}" style="${style}"></div>
-    ${CARD_SKINS[name] && !locked
+    ${actGroup && !locked
+      ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;"><button class="small ghost" onclick="openGalleryModal('${name}', ${actI - 1})">◀</button><div style="flex:1;text-align:center;font-family:'Baloo 2';font-weight:700;font-size:15px;">${shownName}</div><button class="small ghost" onclick="openGalleryModal('${name}', ${actI + 1})">▶</button></div>`
+      : CARD_SKINS[name] && !locked
       ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;"><button class="small ghost" onclick="cycleCardSkin('${name}', -1)">◀</button><div style="flex:1;text-align:center;font-family:'Baloo 2';font-weight:700;font-size:15px;">${cardDisplayName(name)}</div><button class="small ghost" onclick="cycleCardSkin('${name}', 1)">▶</button></div>`
       : `<div style="text-align:center;font-family:'Baloo 2';font-weight:700;font-size:15px;margin-bottom:10px;">${locked ? `🔒 ${SUMMON_LOCKED_STANDS.includes(name) ? '???' : name} (미해금)` : name}</div>`}
     ${locked && isShopOrGacha ? `<button class="small accent" style="width:100%;margin-bottom:6px;" onclick="closeCardModal(); goToScreen('shop');">상점에서 해금하기</button>` : ''}
@@ -5421,6 +5429,11 @@ function getMyFriendCode() {
 function myDisplayName() { return getNickname() || ('플레이어' + getMyFriendCode()); }
 function fdb(path) { return firebase.database().ref(path); }
 function isFriendOnline(code) { const pr = SOCIAL.profiles[code]; return !!(pr && Date.now() - (pr.ts || 0) < PRESENCE_ONLINE_MS); }
+function friendAvatarImg(code, size) { // 친구 프로필 사진 (서버에 프사 번호가 없으면 기본 사진)
+  size = size || 34; const pr = SOCIAL.profiles[code];
+  const src = (pr && typeof pr.avatar === 'number' && AVATARS[pr.avatar]) ? AVATARS[pr.avatar] : AVATARS[0];
+  return `<img src="${src}" alt="" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;background:#fff;border:2px solid #1d2a6b;vertical-align:middle;margin-right:6px;">`;
+}
 function friendName(code, fallbackNick) { const pr = SOCIAL.profiles[code]; return (pr && pr.nick) || fallbackNick || code; } // 가장 최근에 설정한 닉네임
 let heartbeatTimer = null;
 function scheduleHeartbeat() {
@@ -5440,7 +5453,7 @@ function socialChanged() {
   }
 }
 function heartbeat() {
-  fdb('users/' + getMyFriendCode()).set({ nick: myDisplayName(), ts: Date.now(), clientId: myClientId });
+  fdb('users/' + getMyFriendCode()).set({ nick: myDisplayName(), ts: Date.now(), clientId: myClientId, avatar: getAvatarIdx() });
 }
 function refreshFriendProfiles() {
   const codes = new Set(Object.keys(SOCIAL.friends));
@@ -5730,13 +5743,13 @@ function friendsHtml() {
   const partyBox = party
     ? `<div class="room-box show" style="display:block;">
         <div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:4px;">👥 내 팀 (${memberCodes.length}/2)</div>
-        ${memberCodes.map(c => `<div style="font-weight:800;">${party.leader === c ? '👑 ' : '• '}${(c === me ? myDisplayName() : friendName(c, party.members[c].nick)).replace(/</g, '&lt;')}${c === me ? ' (나)' : ''}</div>`).join('')}
+        ${memberCodes.map(c => `<div style="font-weight:800;">${c === me ? '' : friendAvatarImg(c, 26)}${party.leader === c ? '👑 ' : '• '}${(c === me ? myDisplayName() : friendName(c, party.members[c].nick)).replace(/</g, '&lt;')}${c === me ? ' (나)' : ''}</div>`).join('')}
         <button class="small ghost" style="width:100%;margin-top:6px;" onclick="leaveParty()">${isLeader ? '팀 해산' : '팀 나가기'}</button>
         ${memberCodes.length === 2 ? `<button class="small accent" style="width:100%;margin-top:6px;" onclick="goToScreen('doubleBattle')">더블배틀로 이동</button>` : '<div class="room-hint" style="margin-top:6px;">친구를 초대하면 2명이 팀이 돼요.</div>'}
       </div>`
     : `<div class="room-hint">팀이 없어요. 아래 친구에서 "팀 초대"를 누르면 팀이 만들어져요.</div>`;
   const reqs = Object.keys(SOCIAL.requests || {}).map(c => `
-    <div class="shop-item"><div class="shop-item-info"><div class="shop-item-name">${friendName(c, SOCIAL.requests[c].nick).replace(/</g, '&lt;')} <span style="font-size:11px;color:var(--muted);">(${c})</span></div>
+    <div class="shop-item"><div class="shop-item-info"><div class="shop-item-name">${friendAvatarImg(c)}${friendName(c, SOCIAL.requests[c].nick).replace(/</g, '&lt;')} <span style="font-size:11px;color:var(--muted);">(${c})</span></div>
     <div style="display:flex;gap:6px;"><button class="small accent" style="flex:1" onclick="acceptFriend('${c}')">수락</button><button class="small ghost" style="flex:1" onclick="declineFriend('${c}')">거절</button></div></div></div>`).join('');
   const invs = Object.keys(SOCIAL.invites || {}).map(c => `
     <div class="shop-item"><div class="shop-item-info"><div class="shop-item-name">👥 ${(SOCIAL.invites[c].nick || c).replace(/</g, '&lt;')} 님의 팀 초대</div>
@@ -5748,7 +5761,7 @@ function friendsHtml() {
   const canInvite = !party || (isLeader && memberCodes.length < 2);
   const list = friendCodes.length ? friendCodes.sort((a, b) => (isFriendOnline(b) ? 1 : 0) - (isFriendOnline(a) ? 1 : 0)).map(c => `
     <div class="shop-item"><div class="shop-item-info">
-      <div class="shop-item-name">${isFriendOnline(c) ? '🟢' : '⚪'} ${friendName(c).replace(/</g, '&lt;')} <span style="font-size:11px;color:var(--muted);">(${c})</span></div>
+      <div class="shop-item-name">${friendAvatarImg(c)}${isFriendOnline(c) ? '🟢' : '⚪'} ${friendName(c).replace(/</g, '&lt;')} <span style="font-size:11px;color:var(--muted);">(${c})</span></div>
       <div style="display:flex;gap:6px;">
         <button class="small accent" style="flex:1" ${(canInvite && isFriendOnline(c) && !memberCodes.includes(c)) ? '' : 'disabled'} onclick="inviteFriendToParty('${c}')">팀 초대</button>
         <button class="small hp" style="flex:1" ${isFriendOnline(c) ? '' : 'disabled'} onclick="challengeFriend('${c}')">⚔️ 1대1</button>
@@ -5760,7 +5773,7 @@ function friendsHtml() {
       <div style="font-size:11px;color:var(--muted);font-weight:700;">내 친구 코드</div>
       <div style="font-family:'Baloo 2';font-weight:800;font-size:26px;letter-spacing:3px;">${me}</div>
       <button class="small ghost" onclick="copyFriendCode()">코드 복사</button>
-      <div class="room-hint">이름은 설정의 닉네임으로 보여요.</div>
+      <div class="room-hint">이름과 사진은 내 프로필 기준으로 보여요.</div>
     </div>
     ${invs ? `<div class="room-box show" style="display:block;margin-top:10px;"><div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:4px;">팀 초대</div>${invs}</div>` : ''}
     ${chs ? `<div class="room-box show" style="display:block;margin-top:10px;"><div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:4px;">1대1 대결 신청</div>${chs}</div>` : ''}
