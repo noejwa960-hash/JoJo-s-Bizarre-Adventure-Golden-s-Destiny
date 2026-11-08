@@ -10,12 +10,12 @@
 <meta property="og:title" content="죠죠의 기묘한 모험 Golden's Destiny">
 <meta property="og:description" content="죠죠 스탠드 카드 배틀 게임! 친구와 온라인으로 대결해봐.">
 <meta property="og:url" content="https://noejwa960-hash.github.io/JoJo-s-Bizarre-Adventure-Golden-s-Destiny/">
-<meta property="og:image" content="https://noejwa960-hash.github.io/JoJo-s-Bizarre-Adventure-Golden-s-Destiny/og-image.png">
+<meta property="og:image" content="https://noejwa960-hash.github.io/JoJo-s-Bizarre-Adventure-Golden-s-Destiny/gdbanner.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="죠죠의 기묘한 모험 Golden's Destiny">
-<meta name="twitter:image" content="https://noejwa960-hash.github.io/JoJo-s-Bizarre-Adventure-Golden-s-Destiny/og-image.png">
+<meta name="twitter:image" content="https://noejwa960-hash.github.io/JoJo-s-Bizarre-Adventure-Golden-s-Destiny/gdbanner.jpg">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Noto+Sans+KR:wght@400;500;700;900&display=swap');
 
@@ -6214,14 +6214,32 @@ function mailAdd(m) { // 같은 id 는 한 번만 받고, 지운 메일은 다�
   return true;
 }
 function sendLocalMail(id, title, body, coins, card) { return mailAdd({ id, title, body, coins, card, ts: Date.now() }); } // 게임 안에서 보내는 시스템 메일
+const WELCOME_MAIL_BODY = '가입해줘서 고마워! 가입 선물로 100코인을 줄게.\n배틀에서 이기면 코인을 모아 상점에서 카드를 살 수 있어. 도전과제와 랭크전도 도전해봐!';
+function mailMarkServer(id) { // 받은(보상 수령/삭제한) 메일은 계정에 기록해서 다른 기기/재접속 때 다시 안 들어오게 함
+  try { if (firebaseReady && getAccountId() && id) firebase.database().ref('mailState/' + getAccountId() + '/' + String(id).replace(/[.#$\[\]\/]/g, '_')).set(true); } catch (e) {}
+}
 function mailSync() {
   let added = 0;
   if (!getAccountId()) return;
-  if (mailAdd({ id: 'welcome', title: '골든 데스티니에 온 걸 환영해!', body: '가입해줘서 고마워! 가입 선물로 100코인을 줄게.\n배틀에서 이기면 코인을 모아 상점에서 카드를 살 수 있어. 도전과제와 랭크전도 도전해봐!', coins: 100, ts: Date.now() })) added++;
+  const doneIds = {}; // 서버에 기록된 이미 처리한 메일
+  const safe = id => String(id).replace(/[.#$\[\]\/]/g, '_');
+  const addIfNew = m => { if (doneIds[safe(m.id)]) return false; return mailAdd(m); };
   const done = () => { if (added > 0) toastMsg('📬 새 우편이 도착했어!', 3000); if (currentScreen === 'mailbox' || currentScreen === 'menu') render(); };
-  if (!firebaseReady) { done(); return; }
-  const take = snap => { const v = snap.val() || {}; Object.keys(v).forEach(k => { if (mailAdd(Object.assign({ id: k }, v[k]))) added++; }); };
-  firebase.database().ref('mail/all').once('value').then(take)
+  if (!firebaseReady) { // 서버 연결이 없으면 환영 메일만 (이 기기 기록 기준)
+    if (mailAdd({ id: 'welcome', title: '골든 데스티니에 온 걸 환영해!', body: WELCOME_MAIL_BODY, coins: 100, ts: Date.now() })) added++;
+    done(); return;
+  }
+  const take = snap => { const v = snap.val() || {}; Object.keys(v).forEach(k => { if (addIfNew(Object.assign({ id: k }, v[k]))) added++; }); };
+  firebase.database().ref('mailState/' + getAccountId()).once('value')
+    .then(snap => {
+      Object.assign(doneIds, snap.val() || {});
+      // 이 기기에 남아 있는 메일 중 서버에서 이미 처리된 건 보상 못 받게 막음
+      const arr = mailLoad(); let ch = false;
+      arr.forEach(m => { if (doneIds[safe(m.id)] && !m.claimed) { m.claimed = true; m.read = true; ch = true; } });
+      if (ch) mailSave(arr);
+      if (addIfNew({ id: 'welcome', title: '골든 데스티니에 온 걸 환영해!', body: WELCOME_MAIL_BODY, coins: 100, ts: Date.now() })) added++;
+    })
+    .then(() => firebase.database().ref('mail/all').once('value')).then(take)
     .then(() => firebase.database().ref('mail/user/' + getAccountId()).once('value')).then(take)
     .catch(() => {}).then(done);
 }
@@ -6236,13 +6254,14 @@ function mailClaimOne(m) {
   if (!mailHasReward(m)) return false;
   if (m.coins > 0) setCoins(getCoins() + m.coins);
   if (m.card) { const ow = getOwnedShopItems(); if (!ow.includes(m.card)) { ow.push(m.card); setOwnedShopItems(ow); } }
-  m.claimed = true; m.read = true; return true;
+  m.claimed = true; m.read = true; mailMarkServer(m.id); return true;
 }
 function mailClaim(id) { const arr = mailLoad(); const m = arr.find(x => x.id === id); if (m && mailClaimOne(m)) { mailSave(arr); toastMsg('🎁 보상을 받았어!', 2500); render(); } }
 function mailClaimAll() { const arr = mailLoad(); let n = 0; arr.forEach(m => { if (mailClaimOne(m)) n++; }); if (n) { mailSave(arr); toastMsg(`🎁 우편 ${n}개의 보상을 받았어!`, 2500); render(); } }
 function mailDelete(id) {
   const arr = mailLoad(); const m = arr.find(x => x.id === id); if (!m || mailHasReward(m)) return;
   mailSave(arr.filter(x => x.id !== id));
+  mailMarkServer(id);
   try { const d = mailDeletedIds(); d.push(id); localStorage.setItem('sbtcg_mail_del', JSON.stringify(d.slice(-300))); } catch (e) {}
   if (mailOpenId === id) mailOpenId = null; render();
 }
