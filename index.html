@@ -3176,6 +3176,17 @@ function getAvatarIdx() {
     return (v >= 0 && v < AVATARS.length) ? v : 0;
   } catch (e) { return 0; }
 }
+const AVATAR_PRICE = {11: 150, 12: 150, 13: 150}; // 상점에서 코인으로 사는 프로필 사진 (번호: 가격)
+function getOwnedAvatars() { try { return JSON.parse(localStorage.getItem('sbtcg_avatars_owned') || '[]'); } catch (e) { return []; } }
+function avatarLocked(i) { return !!AVATAR_PRICE[i] && !getOwnedAvatars().includes(i); }
+function buyAvatar(i) {
+  const price = AVATAR_PRICE[i]; if (!price || isGuest()) { if (isGuest()) alert('게스트는 구매할 수 없어. 회원가입부터 해줘.'); return; }
+  const owned = getOwnedAvatars(); if (owned.includes(i)) return;
+  const coins = getCoins(); if (coins < price) { alert(`코인이 부족해! (필요 ${price}, 보유 ${coins})`); return; }
+  setCoins(coins - price); owned.push(i); localStorage.setItem('sbtcg_avatars_owned', JSON.stringify(owned));
+  alert('프로필 사진 구매 완료! 프로필에서 바꿀 수 있어.'); render();
+}
+(function () { try { const v = parseInt(localStorage.getItem('sbtcg_avatar') || '0', 10) || 0; if (AVATAR_PRICE[v] && localStorage.getItem('sbtcg_avatar_v') === '2') { const o = getOwnedAvatars(); if (!o.includes(v)) { o.push(v); localStorage.setItem('sbtcg_avatars_owned', JSON.stringify(o)); } } } catch (e) {} })();
 function getAvatarSrc() { return AVATARS[getAvatarIdx()]; }
 function refreshAvatarImgs() {
   document.querySelectorAll('.js-avatar').forEach(i => { i.src = getAvatarSrc(); });
@@ -3189,7 +3200,7 @@ function openAvatarPick() {
   o.innerHTML = `<div onclick="event.stopPropagation()" style="background:#fff;border:3px solid #1d2a6b;border-radius:18px;padding:20px;width:min(340px,90vw);">
     <div style="text-align:center;font-weight:800;margin-bottom:12px;">프로필 사진 바꾸기</div>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-      ${AVATARS.map((src, i) => `<img src="${src}" ${viewOnly ? '' : `onclick="setAvatar(${i})"`} style="width:84px;height:84px;border-radius:50%;object-fit:cover;background:#fff;${viewOnly ? '' : 'cursor:pointer;'}border:4px solid ${i === cur ? '#d4a017' : '#c9cde0'};">`).join('')}
+      ${AVATARS.map((src, i) => { const lk = avatarLocked(i); return `<div style="position:relative;width:84px;height:84px;"><img src="${src}" ${viewOnly ? '' : `onclick="setAvatar(${i})"`} style="width:84px;height:84px;border-radius:50%;object-fit:cover;background:#fff;${viewOnly ? '' : 'cursor:pointer;'}border:4px solid ${i === cur ? '#d4a017' : '#c9cde0'};${lk ? 'filter:brightness(.45);' : ''}">${lk ? '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:28px;pointer-events:none;">🔒</div>' : ''}</div>`; }).join('')}
     </div>
     ${viewOnly ? '<p class="room-hint" style="text-align:center;margin-top:10px;">게스트는 사진 구경만 할 수 있어. 회원가입하면 바꿀 수 있어.</p>' : ''}
     <button class="small ghost" style="width:100%;margin-top:14px;" onclick="document.getElementById('avatar-pick').remove()">닫기</button></div>`;
@@ -3197,6 +3208,7 @@ function openAvatarPick() {
 }
 function setAvatar(i) {
   if (isGuest()) return;
+  if (avatarLocked(i)) { alert('잠겨 있는 사진이야. 상점에서 ' + AVATAR_PRICE[i] + '코인에 살 수 있어.'); return; }
   try { localStorage.setItem('sbtcg_avatar', String(i)); localStorage.setItem('sbtcg_avatar_v', '2'); } catch (e) {}
   try { if (firebaseReady && getAccountId()) firebase.database().ref('accounts/' + getAccountId() + '/avatar').set(i); } catch (e) {}
   const p = document.getElementById('avatar-pick'); if (p) p.remove();
@@ -5121,6 +5133,9 @@ function shopScreenHtml() {
         </button>
       </div>
     </div>
+    <div style="font-weight:800;margin:10px 0 6px;">🖼️ 프로필 사진</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">${Object.keys(AVATAR_PRICE).map(k => { const i = +k, have = !avatarLocked(i), can = coins >= AVATAR_PRICE[i];
+      return `<div style="text-align:center;width:92px;"><img src="${AVATARS[i]}" style="width:76px;height:76px;border-radius:50%;object-fit:cover;border:3px solid #c9cde0;"><div class="shop-item-price" style="justify-content:center;"><img src="${COIN_IMG}" class="coin-icon small"> ${AVATAR_PRICE[i]}</div><button class="small ${have ? 'ghost' : 'accent'}" ${(have || !can) ? 'disabled' : ''} onclick="buyAvatar(${i})">${have ? '보유 중' : (can ? '구매' : '코인 부족')}</button></div>`; }).join('')}</div>
     <p class="room-hint" style="margin:6px 0 10px;">🔄 일부 카드는 매일 자정마다 하나씩 번갈아 판매돼요. 오늘의 카드만 보여요!</p>
     ${items}
   `;
@@ -6125,7 +6140,7 @@ function logoutAsk() {
 // accounts/<아이디>/data 에 저장해두고, 로그인할 때마다 불러와서 어느 기기에서든 이어서 쓸 수 있게 함
 const SYNC_KEYS = ['sbtcg_coins', 'sbtcg_owned', 'sbtcg_equipped', 'sbtcg_ach', 'sbtcg_stats', 'sbtcg_rankpts2', 'sbtcg_rep', 'sbtcg_rep_clean',
   'sbtcg_rankban', 'sbtcg_rankban_n', 'sbtcg_rankban_perm', 'sbtcg_used_codes', 'sbtcg_unlocked_summons', 'sbtcg_history',
-  'sbtcg_avatar', 'sbtcg_avatar_v', 'sbtcg_friend_code', 'sbtcg_mail', 'sbtcg_mail_del'];
+  'sbtcg_avatar', 'sbtcg_avatar_v', 'sbtcg_avatars_owned', 'sbtcg_friend_code', 'sbtcg_mail', 'sbtcg_mail_del'];
 function isSyncKey(k) { return typeof k === 'string' && (SYNC_KEYS.includes(k) || k.startsWith('sbtcg_skin_')); }
 const fbEnc = k => k.replace(/[%.#$\[\]\/]/g, c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'));
 const fbDec = k => k.replace(/%([0-9a-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
