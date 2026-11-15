@@ -2030,6 +2030,7 @@ function attachItem(player, itemId) {
 }
 
 // ---------- 일순(리메이크): 게임을 다시 시작 — 죠나단 죠스타는 터스크 Act.1 로 바뀌고, 재기불능 카드는 덱으로 돌아감 ----------
+const REMAKE_ERASED = ['스톤 프리', '언더 월드', '웨더 리포트', '웨더 리포트(헤비 웨더)', '제일 하우스 록']; // 원작 고증: 일순으로 새 우주가 되면 이 카드들은 덱에서 사라짐
 function remakeGame(caster) {
   log('💫 [일순] 시간이 가속하며 새로운 우주가 시작됩니다! 게임이 다시 시작됩니다.', 'win');
   const deckNames = new Set(buildSampleDeck().map(c => c.name)); // 일반 덱에 들어가는 카드만 덱으로 돌아감
@@ -2040,6 +2041,7 @@ function remakeGame(caster) {
     return c;
   };
   deckNames.add('터스크 Act.1');
+  REMAKE_ERASED.forEach(n => deckNames.delete(n)); // 재기불능에서 덱으로 돌아오는 것도 막음
   state.remade = true; // 일순 이후: 이미지만 바뀌는 카드(스피드왜건 재단·킬러퀸)에 적용
   // 0) 일부 카드가 변경됨: 모든 곳(필드·벤치·손패·재기불능·덱·버린 패)의 "죠나단 죠스타" 가 "터스크 Act.1" 로 바뀜
   let changed = 0;
@@ -2058,6 +2060,11 @@ function remakeGame(caster) {
     pl.koZone.forEach(c => { if (deckNames.has(c.name)) { state.deck.push(resetCard(c)); returned++; } });
     pl.koZone = [];
   });
+  const before = state.deck.length;
+  state.deck = state.deck.filter(c => !REMAKE_ERASED.includes(c.name)); // 덱에서 지움
+  state.discardPile = (state.discardPile || []).filter(c => !REMAKE_ERASED.includes(c.name)); // 버린 패가 덱으로 다시 섞여 돌아오는 것도 막음
+  const erased = before - state.deck.length;
+  if (erased > 0) log(`  → 새 우주에 존재하지 않는 카드 ${erased}장이 덱에서 사라졌습니다. (스톤 프리·언더 월드·웨더 리포트·제일 하우스 록)`, 'info');
   state.deck = shuffle(state.deck);
   // 2) 처음부터: Disc/에너지/턴 초기화, 상태이상 해제 (필드 스탠드는 그대로)
   if (state.doubleMode) { state.teamDiscs = { red: DOUBLE_START_DISCS, blue: DOUBLE_START_DISCS }; state.players.forEach(pl => { pl.discs = state.teamDiscs[pl.team]; }); }
@@ -3760,6 +3767,18 @@ function acqLoad() { try { const o = JSON.parse(localStorage.getItem('sbtcg_acq'
 function acqMigrate() { // 기록이 아예 없던 계정(업데이트 전부터 쓰던 계정)은 지금 가진 카드를 '이전 보유'로 기록
   try { if (localStorage.getItem('sbtcg_acq') !== null) return; const o = {}; getOwnedShopItems().forEach(n => { o[n] = { src: '이전 보유', ts: 0 }; }); localStorage.setItem('sbtcg_acq', JSON.stringify(o)); } catch (e) {}
 }
+// 획득 기록에서 '게임에 없는 카드(버그성)' 항목을 한 번 지움 (계정마다 기기에서 1회)
+function acqPurgeBug() {
+  try {
+    const id = getAccountId(); if (!id || !profileReady || profileApplying) return;
+    const fk = 'sbtcg_acq_purged_' + id; if (localStorage.getItem(fk)) return;
+    const o = acqLoad(); let ch = false;
+    Object.keys(o).forEach(n => { if (!isKnownCardName(n)) { delete o[n]; ch = true; } });
+    if (ch) localStorage.setItem('sbtcg_acq', JSON.stringify(o));
+    localStorage.setItem(fk, '1');
+  } catch (e) {}
+}
+setInterval(acqPurgeBug, 3000);
 function setOwnedShopItems(arr) {
   try {
     const before = new Set(getOwnedShopItems()), o = acqLoad(); let ch = false;
@@ -5592,7 +5611,7 @@ function unlockAchievement(id, allowPractice) {
 const CALAMITY_HOURS = 50;
 function calamityTick() {
   try {
-    if (isFixedDevAccount() || isDevUnlocked()) { localStorage.removeItem('sbtcg_calamity_at'); return; } // 개발자는 대상 아님
+    if (isFixedDevAccount() || isDevUnlocked() || isTamperExempt()) { localStorage.removeItem('sbtcg_calamity_at'); return; } // 개발자는 대상 아님
     const at = parseInt(localStorage.getItem('sbtcg_calamity_at') || '0', 10);
     if (at && Date.now() >= at) {
       localStorage.removeItem('sbtcg_calamity_at');
@@ -5616,7 +5635,7 @@ function isKnownCardName(n) {
 }
 function bugCardCheck() {
   try {
-    if (isFixedDevAccount() || isDevUnlocked()) return;
+    if (isFixedDevAccount() || isDevUnlocked() || isTamperExempt()) return;
     const st = getAchState(); if (st.calamity && st.calamity.done) return;
     if (profileApplying) return;
     if (localStorage.getItem('sbtcg_acq') === null) { acqMigrate(); return; } // 기록이 없으면 먼저 기준선부터 만들고 다음 검사부터 적용
@@ -6825,7 +6844,7 @@ function devPanelActive() { return !!document.getElementById('dev-panel'); }
 function isDevMode() { try { return localStorage.getItem('sbtcg_dev') === '1' && isDevUnlocked(); } catch (e) { return false; } }
 function devSetMode(on) { try { localStorage.setItem('sbtcg_dev', on ? '1' : '0'); } catch (e) {} const o = document.getElementById('dev-panel'); if (o) o.remove(); devPanelShow(); try { render(); } catch (e) {} }
 function devAchList() { return ACHIEVEMENTS; }
-function devUnlockAllAch() { ACHIEVEMENTS.forEach(a => { if (!a.planned) unlockAchievement(a.id, true); }); } // 전체 선택: 모든 도전과제 클리어
+function devUnlockAllAch() { ACHIEVEMENTS.forEach(a => { if (!a.planned && a.id !== 'calamity') unlockAchievement(a.id, true); }); } // 전체 선택: 모든 도전과제 클리어
 function devApplySkinOwn(n) { if (typeof n === 'string' && n.startsWith('skin:')) { const sk = n.slice(5), it = SKIN_SHOP[sk]; if (it) try { localStorage.setItem('sbtcg_skin_' + it.base, String(CARD_SKINS[it.base].indexOf(sk))); } catch (e) {} } }
 function devCardNames() {
   const set = new Set();
