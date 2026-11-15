@@ -1040,10 +1040,19 @@ function startPresence() { // 접속 표시를 방에 남겨두고, 상대 표�
 }
 function claimLeaveWin() {
   if (!state || state.gameOver || state.practiceMode || state.doubleMode || myIndex === null) return;
-  const me = state.players[myIndex], opp = state.players[1 - myIndex]; if (!me || !opp) return;
-  me.discs = 5; state.gameOver = true;
-  log(`🏳 ${opp.name} 이(가) 나가서 ${me.name} 의 승리!`, 'win');
-  pushState(); render();
+  const doClaim = () => {
+    if (!state || state.gameOver || myIndex === null) return;
+    const me = state.players[myIndex], opp = state.players[1 - myIndex]; if (!me || !opp) return;
+    me.discs = 5; state.gameOver = true;
+    log(`🏳 ${opp.name} 이(가) 나가서 ${me.name} 의 승리!`, 'win');
+    pushState(); render();
+  };
+  if (!roomRef) { doClaim(); return; }
+  roomRef.child('state').once('value').then(snap => { // 서버에 이미 끝난 판이 있으면(내 화면이 낡은 경우) 그 결과를 따름
+    const remote = snap.val();
+    if (remote) { const inc = normalizeState(remote); if (inc.gameOver) { state = inc; remoteGameOverSeen = true; render(); return; } }
+    doClaim();
+  }).catch(doClaim);
 }
 // ----- 더블배틀 항복 투표: 한 명이 항복을 누르면 팀원 화면에 20초짜리 투표가 뜨고, 팀원이 반대하지 않으면 항복 -----
 const SV_MS = 20000; const svSeen = {}; let svTimer = null;
@@ -1845,7 +1854,7 @@ function initGame() {
   state.deck = buildSampleDeck();
   state.discardPile = [];
   state.players = [makePlayer('Player 1'), makePlayer('Player 2')];
-  state.turnIndex = 0; state.turnCount = 1; btdWatch = null; state.gameOver = false; state.log = []; state.remade = false; state.ichijun = 0;
+  state.turnIndex = 0; state.turnCount = 1; btdWatch = null; state.gameOver = false; state.log = []; state.remade = false; state.ichijun = 0; state.gid = uid();
   state.prepPhase = true;
   state.practiceMode = false;
   state.doubleMode = false;
@@ -3361,7 +3370,7 @@ function endTurnOrWarnNoDraw(player) {
 // 상태이상이 걸리자마자 즉시 소진되는 버그가 생김. 그래서 넘어가기 전에
 // turnIndex를 실제 행동한 사람 기준으로 맞춰준다.
 function endTurn(actingPlayer) {
-  if (state.gameOver) return;
+  if (state.gameOver) { pushState(); return; } // 이겨서 끝난 판도 서버에 올려야 낡은 상태로 되돌아가지 않음
   noDrawWarningVisible = false;
   if (actingPlayer) {
     const actingIdx = state.players.indexOf(actingPlayer);
@@ -4351,6 +4360,7 @@ function appRootHtml() {
       : (myTurn ? '스탠드를 필드에 배치한 뒤 아래 "준비완료"를 눌러주세요.' : `${(state.players[state.turnIndex] || {}).name || '상대'} 이(가) 준비 중입니다...`);
     banner = `<div class="gameover-banner" style="background:var(--accent);border-color:var(--accent-dark);box-shadow:0 4px 0 var(--accent-dark);">🛡 준비 시간 — ${prepNote}</div>`;
   } else if (!state.gameOver) {
+    goFallbackPushed = false;
     statsRecorded = false;
     gameRewardShown = 0;
     piecesRewardShown = 0;
@@ -4369,8 +4379,9 @@ function appRootHtml() {
         const wp = meP || winner;
         if (wp && wp.usedStandNames && wp.usedStandNames.length === 1 && wp.usedStandNames[0] === '크림') unlockAchievement('vanilla-ice');
       }
-      if (!state.practiceMode && !statsRecorded) { statsRecorded = true; rankLiveClear(); recordGameResult(!!realWin); recordMatchHistory(!!realWin, meP); if (rankedMatch && !state.doubleMode && myIndex !== null) recordRankResult(!!realWin, state.turnCount); repOnCleanGame(); }
+      if (!state.practiceMode && !statsRecorded && !(state.gid && lastStatsGid === state.gid)) { statsRecorded = true; lastStatsGid = state.gid || null; rankLiveClear(); recordGameResult(!!realWin); recordMatchHistory(!!realWin, meP); if (rankedMatch && !state.doubleMode && myIndex !== null) recordRankResult(!!realWin, state.turnCount); repOnCleanGame(); }
     }
+    if (roomRef && myIndex !== null && !state.practiceMode && !state.doubleMode && iWon && !goFallbackPushed) { goFallbackPushed = true; setTimeout(() => { try { if (state.gameOver && roomRef) roomRef.child('state').set(state).catch(() => {}); } catch (e) {} }, 0); }
     const doubleWinText = state.doubleMode ? `${teamLabel(state.winnerTeam)} 승리!` : '';
     banner = state.doubleMode ? `<div class="gameover-banner">🏆 ${doubleWinText}</div>` : iWon
       ? `<div class="gameover-banner">🏆 승리!</div>`
@@ -4594,7 +4605,7 @@ function initDoubleGame() {
   state.doubleMode = true; state.practiceMode = false;
   state.teamDiscs = { red: DOUBLE_START_DISCS, blue: DOUBLE_START_DISCS };
   state.doubleTargets = {}; state._actor = null; state.winnerTeam = null; state.surrenderVote = null;
-  state.turnIndex = 0; state.turnCount = 1; btdWatch = null; state.gameOver = false; state.log = []; state.remade = false; state.ichijun = 0;
+  state.turnIndex = 0; state.turnCount = 1; btdWatch = null; state.gameOver = false; state.log = []; state.remade = false; state.ichijun = 0; state.gid = uid();
   state.prepPhase = true;
   practiceViewFlipped = false;
   coinsAwardedThisGame = true; remoteGameOverSeen = false; gameOverOverlayDismissed = false;
@@ -5433,6 +5444,36 @@ function settingsScreenHtml() {
   `;
 }
 
+// ---------- 업데이트 내역 (새로 업데이트할 때마다 맨 위에 항목을 추가) ----------
+const UPDATE_LOG = [
+  { title: '2026.11.15', items: [
+    '🛠 온라인 대전에서 카드를 뽑은 뒤 이기면 승리가 서버에 안 올라가서 이기기 직전 화면으로 돌아가던 문제 수정 · 같은 판 전적이 여러 번 기록되던 문제 수정 · 진 판이 이긴 것으로 기록될 수 있던 문제 수정',
+    '📢 메뉴에 업데이트 내역 추가',
+    '🔄 계정 전환 추가 — 이 기기에서 로그인했던 계정끼리 메뉴에서 바로 바꿀 수 있어 (계정이 2개 이상일 때 표시)',
+    '💫 메이드 인 헤븐의 "일순"을 쓰면 원작 고증에 맞지 않는 일부 카드가 덱에서 사라지도록 변경',
+  ] },
+  { title: '이전 업데이트', items: [
+    '🔔 다른 기기에서 내 계정으로 로그인하면 우편함으로 알려줘 ("응, 나야"로 확인 가능) · 안 읽은 우편이 있으면 메뉴에 ❗ 표시',
+    '🚩 신고 기능 추가 — 대전이 끝나면 상대를 신고할 수 있어 (핵 / 부적절한 닉네임)',
+    '🛠 온라인 대전에서 이긴 직후 이기기 직전 화면으로 돌아가던 문제 수정',
+    '🃏 특수 소환 카드 추가',
+    '🃏 기타 카드 추가',
+    '🎯 연습장에서 없는(미보유·미해금) 카드는 고를 수 없게 변경',
+    '🎫 패스 경험치 획득량 2배 · 패배하면 -20 XP · 레벨 30 카드 보상 이미지 표시',
+    '🏁 랭크전 빠른 턴 보너스를 25턴부터 적용',
+    '⚔️ 대전 기록 화면 개편',
+    '🧾 획득 기록 추가 — 카드를 어디서 얻었는지 확인',
+    '🎨 카드 스킨 추가',
+    '🛒 상점에 카드 / 꾸미기 탭 추가',
+  ] },
+];
+function updatesScreenHtml() {
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  return `<div class="screen-header"><button class="small ghost" onclick="goToScreen('menu')">← 메뉴</button><span class="screen-title">업데이트 내역</span></div>
+    ${UPDATE_LOG.map(u => `<div class="room-box show" style="display:block;margin-bottom:10px;padding:12px;">
+      <div style="font-weight:800;font-size:15px;margin-bottom:6px;">📢 ${esc(u.title)}</div>
+      <ul style="margin:0;padding-left:18px;font-size:13px;font-weight:700;line-height:1.7;">${u.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`).join('')}`;
+}
 // ---------- 메뉴 ----------
 function menuScreenHtml() {
   return `
@@ -5447,6 +5488,11 @@ function menuScreenHtml() {
       <span class="mode-icon">🏆</span>
       <span class="mode-name">도전과제</span>
       <span class="mode-desc">조건을 달성하고 코인 보상 받기</span>
+    </button>
+    <button class="mode-card" onclick="goToScreen('updates')">
+      <span class="mode-icon">📢</span>
+      <span class="mode-name">업데이트 내역</span>
+      <span class="mode-desc">뭐가 새로 바뀌었는지 보기</span>
     </button>
     <button class="mode-card" onclick="goToScreen('acq')">
       <span class="mode-icon">🧾</span>
@@ -5507,6 +5553,8 @@ const ACHIEVEMENTS = [
   { id: 'ring-ring', name: '"따르르르르르르르르르르르르르르르르르릉"', desc: '"킹 크림슨"에게 "에피타프"를 부착한다.', reward: 10, rewardPieces: 5 },
   { id: 'fourteen-words', name: "\"그리고 필요한 것은 '14단어'.\"", desc: '메이드 인 헤븐의 "일순"을 사용한다.', reward: 140 },
 ];
+let goFallbackPushed = false; // 이긴 직후 서버 저장 확인용
+let lastStatsGid = null; // 마지막으로 전적을 기록한 판 번호
 let statsRecorded = false; // 이번 판 전적 기록 여부 (게임이 진행 중이면 render가 다시 false로 되돌림)
 function getWinStreak() { try { return JSON.parse(localStorage.getItem('sbtcg_stats') || '{}').ws || 0; } catch (e) { return 0; } }
 function getBestStreak() { try { return JSON.parse(localStorage.getItem('sbtcg_stats') || '{}').bw || 0; } catch (e) { return 0; } }
@@ -6128,6 +6176,7 @@ function render() {
   else if (currentScreen === 'achievements') root.innerHTML = achievementsScreenHtml();
   else if (currentScreen === 'history') root.innerHTML = historyScreenHtml();
   else if (currentScreen === 'acq') root.innerHTML = acqScreenHtml();
+  else if (currentScreen === 'updates') root.innerHTML = updatesScreenHtml();
   else if (currentScreen === 'pass') root.innerHTML = passScreenHtml();
   else if (currentScreen === 'rank') root.innerHTML = rankScreenHtml();
   else if (currentScreen === 'mailbox') root.innerHTML = mailboxScreenHtml();
@@ -6732,7 +6781,7 @@ async function hashPassword(salt, pw) {
 }
 // ---------- 게스트 (둘러보기: 카드 도감·튜토리얼·연습장만 가능) ----------
 function isGuest() { try { return !getAccountId() && sessionStorage.getItem('sbtcg_guest') === '1'; } catch (e) { return false; } }
-const GUEST_SCREENS = ['home', 'menu', 'cards', 'tutorial', 'practiceSetup', 'practicePicker', 'achievements', 'history', 'acq', 'pass', 'shop']; // 도전과제는 목록 구경만 (달성은 못 함)
+const GUEST_SCREENS = ['home', 'menu', 'cards', 'tutorial', 'practiceSetup', 'practicePicker', 'achievements', 'history', 'acq', 'updates', 'pass', 'shop']; // 도전과제는 목록 구경만 (달성은 못 함)
 function guestBlocked(name) { return isGuest() && !GUEST_SCREENS.includes(name) && !(name === 'game' && state.practiceMode); }
 function enterGuest() {
   try { sessionStorage.setItem('sbtcg_guest', '1'); } catch (e) {}
